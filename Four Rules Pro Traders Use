@@ -1,0 +1,174 @@
+import ccxt
+import time
+from colorama import Fore, init
+
+init(autoreset=True)
+
+TIMEFRAME = "1m"
+
+exchange = ccxt.binance({"enableRateLimit": True})
+
+# cooldown hafızası
+last_signal_time = {}
+
+# ---------------- EMA ----------------
+def ema(prices, period):
+
+    multiplier = 2 / (period + 1)
+    ema_val = sum(prices[:period]) / period
+
+    for price in prices[period:]:
+        ema_val = (price - ema_val) * multiplier + ema_val
+
+    return ema_val
+
+
+# ---------------- RSI ----------------
+def rsi(prices, period=14):
+
+    gains = []
+    losses = []
+
+    for i in range(1, len(prices)):
+
+        diff = prices[i] - prices[i - 1]
+
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+
+    if avg_loss == 0:
+        return 100
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+# ---------------- TOP 50 COIN ----------------
+def get_top_50():
+
+    tickers = exchange.fetch_tickers()
+
+    coins = []
+
+    for symbol in tickers:
+
+        if "/USDT" in symbol:
+
+            vol = tickers[symbol]["quoteVolume"] or 0
+            coins.append((symbol, vol))
+
+    coins.sort(key=lambda x: x[1], reverse=True)
+
+    return [x[0] for x in coins[:50]]
+
+
+# ---------------- STRATEGY ----------------
+def check(symbol):
+
+    ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=50)
+
+    opens = [x[1] for x in ohlcv]
+    highs = [x[2] for x in ohlcv]
+    lows = [x[3] for x in ohlcv]
+    closes = [x[4] for x in ohlcv]
+
+    last_close = closes[-1]
+    last_open = opens[-1]
+    last_high = highs[-1]
+    last_low = lows[-1]
+
+    ema9 = ema(closes, 9)
+    ema21 = ema(closes, 21)
+
+    rsi_val = rsi(closes)
+
+    support = min(lows[-21:-1])
+    resistance = max(highs[-21:-1])
+
+    c1 = min(ema9, ema21) <= last_close <= max(ema9, ema21)
+    c2 = last_low <= support or last_high >= resistance
+    c3 = last_close > last_open
+    c4 = rsi_val > 50
+
+    score = sum([c1, c2, c3, c4])
+
+    missing = []
+
+    if not c1:
+        missing.append("PricePocket")
+
+    if not c2:
+        missing.append("TouchLevel")
+
+    if not c3:
+        missing.append("CandleClose")
+
+    if not c4:
+        missing.append("RSI")
+
+    return score, last_close, rsi_val, missing
+
+
+# ---------------- MAIN ----------------
+def main():
+
+    print(Fore.CYAN + "QuantPulseData Four Rules Four Rules Scanning...")
+
+    symbols = get_top_50()
+
+    print(Fore.GREEN + f"{len(symbols)} coin Scanning")
+
+    while True:
+
+        print(Fore.YELLOW + "\n--- SCAN ---")
+
+        for symbol in symbols:
+
+            try:
+
+                score, price, rsi_val, missing = check(symbol)
+
+                now = time.time()
+
+                if symbol not in last_signal_time:
+                    last_signal_time[symbol] = 0
+
+                # ENTRY
+                if score == 4:
+
+                    print(
+                        Fore.GREEN +
+                        f"ENTRY → {symbol} | {price} | RSI {round(rsi_val,1)}"
+                    )
+
+                # 3/4 SETUP
+                elif score == 3:
+
+                    # 2 dakika cooldown
+                    if now - last_signal_time[symbol] > 120:
+
+                        Missing = ", ".join(missing)
+
+                        print(
+                            Fore.YELLOW +
+                            f"3/4 SETUP → {symbol} | Missing: "
+                            + Fore.CYAN + Missing
+                        )
+
+                        last_signal_time[symbol] = now
+
+            except:
+                pass
+
+        time.sleep(10)
+
+
+if __name__ == "__main__":
+    main()
